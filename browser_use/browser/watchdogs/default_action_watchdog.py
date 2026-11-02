@@ -1515,22 +1515,23 @@ class DefaultActionWatchdog(BaseWatchdog):
 
 		# Strategy 3: Keyboard shortcuts (last resort)
 		try:
-			import platform
-
-			is_macos = platform.system() == 'Darwin'
+			is_macos = await self._is_macos_browser(cdp_session)
 			select_all_modifier = 4 if is_macos else 2  # Meta=4 (Cmd), Ctrl=2
 			modifier_name = 'Cmd' if is_macos else 'Ctrl'
 
 			self.logger.debug(f'🧹 Last resort: Clearing using {modifier_name}+A + Backspace')
 
 			# Select all text (Ctrl/Cmd+A)
+			select_all_params: dict = {
+				'type': 'keyDown',
+				'key': 'a',
+				'code': 'KeyA',
+				'modifiers': select_all_modifier,
+			}
+			if is_macos:
+				select_all_params['commands'] = [_MACOS_META_EDITING_COMMANDS[(frozenset({'Meta'}), 'a')]]
 			await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-				params={
-					'type': 'keyDown',
-					'key': 'a',
-					'code': 'KeyA',
-					'modifiers': select_all_modifier,
-				},
+				params=select_all_params,
 				session_id=cdp_session.session_id,
 			)
 			await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
@@ -2469,6 +2470,17 @@ class DefaultActionWatchdog(BaseWatchdog):
 		except Exception as e:
 			raise
 
+	async def _is_macos_browser(self, cdp_session) -> bool:
+		"""Whether the CDP browser runs on macOS, which may differ from the client OS for remote browsers."""
+		try:
+			version_info = await cdp_session.cdp_client.send.Browser.getVersion()
+			user_agent = version_info.get('userAgent', '') if isinstance(version_info, dict) else ''
+			if user_agent:
+				return 'Macintosh' in user_agent or 'Mac OS X' in user_agent
+		except Exception:
+			pass
+		return platform.system() == 'Darwin'
+
 	async def _dispatch_key_event(
 		self, cdp_session, event_type: str, key: str, modifiers: int = 0, commands: list[str] | None = None
 	) -> None:
@@ -2559,7 +2571,7 @@ class DefaultActionWatchdog(BaseWatchdog):
 
 				# Chrome on macOS only runs Cmd editing shortcuts when the key event names the command
 				commands = None
-				if platform.system() == 'Darwin':
+				if 'Meta' in modifiers and await self._is_macos_browser(cdp_session):
 					command = _MACOS_META_EDITING_COMMANDS.get((frozenset(modifiers), main_key.lower()))
 					commands = [command] if command else None
 
